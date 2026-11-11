@@ -39,6 +39,7 @@ test("same model on different channels retains the selected channel identity", (
     config.localChannels.unshift({ ...config.localChannels[0], id: "other", name: "APIMart" });
     assert.equal(isAPIMartKlingV3Config(config, model), false);
     config.videoChannelId = "other";
+    config.activeChannelId = "other";
     assert.equal(isAPIMartKlingV3Config(config, model), true);
 });
 
