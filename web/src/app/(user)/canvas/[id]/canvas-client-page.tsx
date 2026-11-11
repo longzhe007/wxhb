@@ -1490,8 +1490,13 @@ function InfiniteCanvasPage({ projectId }: { projectId: string }) {
             };
         });
 
-        setNodes((prev) => [...prev, ...pastedNodes]);
-        setConnections((prev) => [...prev, ...nextConnections]);
+        const nextNodeState = [...nodesRef.current, ...pastedNodes];
+        const nextConnectionState = [...connectionsRef.current, ...nextConnections];
+        // Keep clipboard references current for a rapid follow-up copy or paste.
+        nodesRef.current = nextNodeState;
+        connectionsRef.current = nextConnectionState;
+        setNodes(nextNodeState);
+        setConnections(nextConnectionState);
         setSelectedNodeIds(new Set(pastedNodes.map((node) => node.id)));
         setSelectedConnectionId(null);
         setContextMenu(null);
