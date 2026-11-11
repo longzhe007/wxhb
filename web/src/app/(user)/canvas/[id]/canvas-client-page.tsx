@@ -31,6 +31,7 @@ import { captureVideoFrame, type VideoFramePosition } from "../utils/canvas-vide
 import { PANORAMA_IMAGE_SIZE, PANORAMA_NODE_SIZE, buildPanoramaPrompt, isCanvasImageNodeType, isPanoramaNodeType } from "../utils/canvas-panorama";
 import { applyCameraPrompt } from "../utils/canvas-camera";
 import { GROUP_PADDING, findContainingGroupId, findGroupDropTarget, getNodeBounds, snapNodesIntoGroup } from "../utils/canvas-group";
+import { buildCanvasClipboard, remapCanvasClipboardConnections, type CanvasClipboard } from "../utils/canvas-clipboard";
 import {
     calculateCanvasAlignment,
     createCanvasAlignmentContext,
@@ -102,11 +103,6 @@ import type { ReferenceImage } from "@/types/image";
 import type { ReferenceAudio, ReferenceVideo } from "@/types/media";
 
 const CanvasPanoramaViewer = dynamic(() => import("../components/canvas-panorama-viewer"), { ssr: false, loading: () => null });
-
-type CanvasClipboard = {
-    nodes: CanvasNodeData[];
-    connections: CanvasConnection[];
-};
 
 type PendingConnectionCreate = {
     connection: ConnectionHandle;
@@ -1434,31 +1430,7 @@ function InfiniteCanvasPage({ projectId }: { projectId: string }) {
     }, []);
 
     const copySelectedNodes = useCallback(() => {
-        const selectedIds = selectedNodeIdsRef.current;
-        if (!selectedIds.size) return;
-
-        const copiedIds = new Set(selectedIds);
-        nodesRef.current.forEach((node) => {
-            if (node.type !== CanvasNodeType.Group || !selectedIds.has(node.id)) return;
-            nodesRef.current.forEach((child) => {
-                if (child.metadata?.groupId === node.id) copiedIds.add(child.id);
-            });
-        });
-
-        const copiedNodes = nodesRef.current
-            .filter((node) => copiedIds.has(node.id))
-            .map((node) => ({
-                ...node,
-                position: { ...node.position },
-                metadata: node.metadata ? { ...node.metadata } : undefined,
-            }));
-
-        if (!copiedNodes.length) return;
-
-        clipboardRef.current = {
-            nodes: copiedNodes,
-            connections: connectionsRef.current.filter((connection) => copiedIds.has(connection.fromNodeId) && copiedIds.has(connection.toNodeId)).map((connection) => ({ ...connection })),
-        };
+        clipboardRef.current = buildCanvasClipboard(nodesRef.current, connectionsRef.current, selectedNodeIdsRef.current);
     }, []);
 
     const pasteCopiedNodes = useCallback(() => {
@@ -1507,18 +1479,15 @@ function InfiniteCanvasPage({ projectId }: { projectId: string }) {
             return { ...node, metadata: { ...node.metadata, groupId: undefined } };
         });
 
-        const nextConnections = clipboard.connections.flatMap((connection, index) => {
-            const fromNodeId = idMap.get(connection.fromNodeId);
-            const toNodeId = idMap.get(connection.toNodeId);
-            if (!fromNodeId || !toNodeId) return [];
-            return [
-                {
-                    ...connection,
-                    id: `conn-${Date.now()}-${index}-${Math.random().toString(36).slice(2, 7)}`,
-                    fromNodeId,
-                    toNodeId,
-                },
-            ];
+        const nextConnections = remapCanvasClipboardConnections(
+            clipboard.connections,
+            idMap,
+            new Set(nodesRef.current.map((node) => node.id)),
+        ).map((connection, index) => {
+            return {
+                ...connection,
+                id: `conn-${Date.now()}-${index}-${Math.random().toString(36).slice(2, 7)}`,
+            };
         });
 
         setNodes((prev) => [...prev, ...pastedNodes]);
