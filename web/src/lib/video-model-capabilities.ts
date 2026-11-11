@@ -2,6 +2,11 @@ export function modelKey(modelName: string) {
     return modelName.trim().toLowerCase().replace(/[._/]+/g, "-");
 }
 
+export function museVideoReferenceLimitError(modelName: string, count: number) {
+    if (modelKey(modelName) !== "muse-video" || count <= 10) return "";
+    return `Muse Video 最多支持 10 张参考图，当前已选择 ${count} 张。请移除 ${count - 10} 张或将多张角色设定合成为一张参考图。`;
+}
+
 export function isCogVideoX3Model(modelName: string) {
     return modelKey(modelName) === "cogvideox-3";
 }

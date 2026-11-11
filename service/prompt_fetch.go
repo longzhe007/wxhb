@@ -22,6 +22,8 @@ const (
 	youMindNanoBananaProRawBase  = "https://raw.githubusercontent.com/YouMind-OpenLab/awesome-nano-banana-pro-prompts/main"
 	xianyuAwesomeGptImage2RawBase = "https://raw.githubusercontent.com/xianyu110/awesome-gptimage2/main"
 	davidWuGptImage2RawBase      = "https://raw.githubusercontent.com/davidwuw0811-boop/awesome-gpt-image2-prompts/main"
+	museVideoPromptsRawBase      = "https://raw.githubusercontent.com/apimodels/muse-video-prompts/main"
+	museVideoPromptsRepository   = "https://github.com/apimodels/muse-video-prompts"
 )
 
 var gptImage2CaseFiles = []string{"README.md", "cases/ad-creative.md", "cases/character.md", "cases/comparison.md", "cases/ecommerce.md", "cases/portrait.md", "cases/poster.md", "cases/ui.md"}
@@ -68,6 +70,23 @@ type davidWuGptImage2Prompt struct {
 	Image      string `json:"image"`
 }
 
+type museVideoPrompt struct {
+	ID             string  `json:"id"`
+	Title          string  `json:"title"`
+	Category       string  `json:"category"`
+	Language       string  `json:"language"`
+	Aspect         string  `json:"aspect"`
+	Seconds        float64 `json:"seconds"`
+	NeedsReference bool    `json:"needs_reference"`
+	Author         string  `json:"author"`
+	Date           string  `json:"date"`
+	URL            string  `json:"url"`
+	TextStatus     string  `json:"text_status"`
+	Text           string  `json:"text"`
+	UsageNote      string  `json:"usage_note"`
+	Page           string  `json:"page"`
+}
+
 func SyncPromptCategory(category string) ([]model.PromptCategory, error) {
 	for _, item := range repository.PromptCategories() {
 		if item.Category != category {
@@ -101,8 +120,100 @@ func buildPromptCategory(category string) ([]model.Prompt, error) {
 		return buildYouMindNanoBananaProPrompts()
 	case "davidwu-gpt-image2-prompts":
 		return buildDavidWuGptImage2Prompts()
+	case "muse-video-prompts":
+		return buildMuseVideoPrompts()
 	}
 	return nil, errors.New("未知提示词分类")
+}
+
+func buildMuseVideoPrompts() ([]model.Prompt, error) {
+	raw, err := fetchText(museVideoPromptsRawBase, "data/prompts.json")
+	if err != nil {
+		return nil, err
+	}
+	return buildMuseVideoPromptsFromJSON([]byte(raw))
+}
+
+func buildMuseVideoPromptsFromJSON(raw []byte) ([]model.Prompt, error) {
+	data := []museVideoPrompt{}
+	if err := json.Unmarshal(raw, &data); err != nil {
+		return nil, err
+	}
+	items := make([]model.Prompt, 0, len(data))
+	for _, entry := range data {
+		id := strings.TrimSpace(entry.ID)
+		title := strings.TrimSpace(entry.Title)
+		prompt := strings.TrimSpace(entry.Text)
+		if id == "" || title == "" || prompt == "" {
+			continue
+		}
+		tags := []string{"muse-video"}
+		for _, tag := range []string{strings.TrimSpace(entry.Category), strings.TrimSpace(entry.Language), strings.TrimSpace(entry.Aspect)} {
+			if tag != "" {
+				tags = append(tags, tag)
+			}
+		}
+		if entry.NeedsReference {
+			tags = append(tags, "需要参考图")
+		}
+		if strings.HasPrefix(strings.ToLower(strings.TrimSpace(entry.TextStatus)), "full") {
+			tags = append(tags, "完整文本")
+		} else {
+			tags = append(tags, "摘录")
+		}
+		if entry.Seconds > 0 {
+			tags = append(tags, museVideoDuration(entry.Seconds)+"秒")
+		}
+		items = append(items, model.Prompt{
+			ID:        "muse-video-prompts-" + id,
+			Title:     id + " · " + title,
+			Prompt:    prompt,
+			Tags:      tags,
+			Preview:   museVideoPromptPreview(entry),
+			CreatedAt: normalizePromptTime(entry.Date),
+			UpdatedAt: normalizePromptTime(entry.Date),
+		})
+	}
+	return items, nil
+}
+
+func museVideoPromptPreview(entry museVideoPrompt) string {
+	lines := []string{museVideoPromptsRepository}
+	if author := strings.TrimSpace(entry.Author); author != "" {
+		lines = append(lines, "作者：@"+author)
+	}
+	if source := strings.TrimSpace(entry.URL); source != "" {
+		lines = append(lines, "原帖："+source)
+	}
+	if page := strings.TrimSpace(entry.Page); page != "" {
+		lines = append(lines, "条目："+museVideoPromptsRepository+"/blob/main/"+strings.TrimLeft(page, "/"))
+	}
+	metadata := []string{}
+	if entry.Seconds > 0 {
+		metadata = append(metadata, museVideoDuration(entry.Seconds)+" 秒")
+	}
+	if aspect := strings.TrimSpace(entry.Aspect); aspect != "" {
+		metadata = append(metadata, aspect)
+	}
+	if entry.NeedsReference {
+		metadata = append(metadata, "需要参考图")
+	}
+	if len(metadata) > 0 {
+		lines = append(lines, "参数："+strings.Join(metadata, " · "))
+	}
+	if strings.HasPrefix(strings.ToLower(strings.TrimSpace(entry.TextStatus)), "full") {
+		lines = append(lines, "文本：完整文本（按仓库来源标注）")
+	} else {
+		lines = append(lines, "文本：摘录；完整内容请查看原帖")
+	}
+	if note := strings.TrimSpace(entry.UsageNote); note != "" {
+		lines = append(lines, "用法："+note)
+	}
+	return strings.Join(lines, "\n\n")
+}
+
+func museVideoDuration(seconds float64) string {
+	return strings.TrimRight(strings.TrimRight(strconv.FormatFloat(seconds, 'f', 2, 64), "0"), ".")
 }
 
 func fetchText(baseURL, file string) (string, error) {

@@ -18,6 +18,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/textproto"
+	"net/url"
 	"path/filepath"
 	"strings"
 	"time"
@@ -285,7 +286,11 @@ func runCanvasImageTask(task model.CanvasImageTask, user model.AuthUser, body []
 	}
 	translationInput, _ := service.ReadParameterTranslationInput(body)
 	collectAll := translationInput != nil || allAIProtocolImageResults(task.Model)
-	imageURLs, mimeType, bytes, err := imageURLsFromAIResponse(payload, responseContentType, collectAll, task.Endpoint == "/chat/completions")
+	mediaBaseURL := ""
+	if channel, _, channelErr := selectAIRequestChannel(user, task.Model, channelID, userChannelID, true); channelErr == nil {
+		mediaBaseURL = channel.BaseURL
+	}
+	imageURLs, mimeType, bytes, err := imageURLsFromAIResponse(payload, responseContentType, collectAll, task.Endpoint == "/chat/completions", mediaBaseURL)
 	if err != nil {
 		saveFailedCanvasImageTask(task, err.Error(), string(payload))
 		return
@@ -589,7 +594,7 @@ func imageBytesFromAIResponse(payload []byte) ([]byte, string, error) {
 	return nil, "", errors.New("图片接口没有返回图片")
 }
 
-func imageURLsFromAIResponse(payload []byte, contentType string, collectAll bool, includeChatImages bool) ([]string, string, int64, error) {
+func imageURLsFromAIResponse(payload []byte, contentType string, collectAll bool, includeChatImages bool, mediaBaseURL string) ([]string, string, int64, error) {
 	candidates, err := imageCandidatesFromAIResponse(payload, contentType, includeChatImages)
 	if err != nil {
 		return nil, "", 0, err
@@ -599,10 +604,10 @@ func imageURLsFromAIResponse(payload []byte, contentType string, collectAll bool
 	firstMimeType := ""
 	var firstBytes int64
 	for _, candidate := range candidates {
-		url := candidate
+		url := resolveRelativeImageURL(candidate, mediaBaseURL)
 		mimeType := ""
 		var bytes int64
-		if !strings.HasPrefix(candidate, "http://") && !strings.HasPrefix(candidate, "https://") {
+		if !strings.HasPrefix(url, "http://") && !strings.HasPrefix(url, "https://") {
 			data, detectedMimeType, err := imageCandidateBytes(candidate)
 			if err != nil || len(data) == 0 {
 				continue
@@ -630,6 +635,21 @@ func imageURLsFromAIResponse(payload []byte, contentType string, collectAll bool
 		return nil, "", 0, errors.New("图片接口没有返回图片")
 	}
 	return urls, firstMimeType, firstBytes, nil
+}
+
+func resolveRelativeImageURL(candidate string, mediaBaseURL string) string {
+	if !strings.HasPrefix(candidate, "/") || strings.TrimSpace(mediaBaseURL) == "" {
+		return candidate
+	}
+	base, err := url.Parse(mediaBaseURL)
+	if err != nil || base.Scheme == "" || base.Host == "" {
+		return candidate
+	}
+	reference, err := url.Parse(candidate)
+	if err != nil {
+		return candidate
+	}
+	return base.ResolveReference(reference).String()
 }
 
 type serverSentJSONEvent struct {
@@ -710,7 +730,7 @@ func collectImageCandidates(value any, depth int, includeChatImages bool) []stri
 	switch typed := value.(type) {
 	case string:
 		text := strings.TrimSpace(typed)
-		if strings.HasPrefix(text, "http://") || strings.HasPrefix(text, "https://") || strings.HasPrefix(text, "data:image/") || looksLikeBase64(text) {
+		if strings.HasPrefix(text, "http://") || strings.HasPrefix(text, "https://") || strings.HasPrefix(text, "/v1/media/") || strings.HasPrefix(text, "data:image/") || looksLikeBase64(text) {
 			return []string{text}
 		}
 	case []any:

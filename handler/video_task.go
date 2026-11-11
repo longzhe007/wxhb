@@ -9,6 +9,8 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -374,6 +376,7 @@ func pollVideoTaskFromUpstream(ctx context.Context, task model.VideoTask) (servi
 	}
 	transformed := transformVideoStatusPayload(payload, request, channel, task.Model)
 	parsed := parseVideoTaskPayload(transformed, task.Model)
+	parsed.VideoURL = resolveMuseVideoURL(parsed.VideoURL, channel, task.Model)
 	if service.IsArkChannel(channel) && parsed.Status == "expired" {
 		parsed.Status = "failed"
 	}
@@ -405,11 +408,79 @@ func pollVideoTaskFromUpstream(ctx context.Context, task model.VideoTask) (servi
 }
 
 func normalizeVideoCreateBody(body []byte, contentType string, modelName string, channel model.ModelChannel, upstreamPath string) ([]byte, string, error) {
+	if isMuseVideoModel(modelName) {
+		return normalizeMuseVideoCreateBody(body, contentType)
+	}
 	prepared, _, err := prepareAIProtocolRequest(aiProtocolRequest{
 		mode: aiProtocolVideoRequest, body: body, contentType: contentType, modelName: modelName,
 		channel: channel, endpoint: "/videos", path: upstreamPath,
 	})
 	return prepared.body, prepared.contentType, err
+}
+
+func isMuseVideoModel(modelName string) bool {
+	return strings.EqualFold(strings.TrimSpace(modelName), "muse-video")
+}
+
+func normalizeMuseVideoCreateBody(body []byte, contentType string) ([]byte, string, error) {
+	payload, err := tokenDanceRequestPayload(body, contentType)
+	if err != nil {
+		return nil, "", err
+	}
+	duration, _ := strconv.Atoi(firstNonEmpty(toStringSafe(payload["duration"]), toStringSafe(payload["seconds"])))
+	if duration <= 0 {
+		duration = 5
+	}
+	result := map[string]any{
+		"prompt":   strings.TrimSpace(toStringSafe(payload["prompt"])),
+		"duration": duration,
+		"size":     museVideoSize(toStringSafe(payload["size"])),
+	}
+	images := []map[string]string{}
+	seen := map[string]bool{}
+	for _, key := range []string{"images", "input_reference[]", "first_frame_url", "last_frame_url"} {
+		for _, imageURL := range tokenDanceStrings(payload[key]) {
+			if imageURL != "" && !seen[imageURL] {
+				seen[imageURL] = true
+				images = append(images, map[string]string{"url": imageURL})
+			}
+		}
+	}
+	if len(images) > 0 {
+		result["images"] = images
+	}
+	encoded, err := json.Marshal(result)
+	return encoded, "application/json", err
+}
+
+func museVideoSize(value string) string {
+	switch strings.TrimSpace(value) {
+	case "720x1280", "1080x1920", "9:16":
+		return "9:16"
+	case "1024x1024", "1080x1080", "1:1":
+		return "1:1"
+	case "1024x768", "4:3":
+		return "4:3"
+	case "768x1024", "3:4":
+		return "3:4"
+	default:
+		return "16:9"
+	}
+}
+
+func resolveMuseVideoURL(value string, channel model.ModelChannel, modelName string) string {
+	if !isMuseVideoModel(modelName) || !strings.HasPrefix(value, "/") {
+		return value
+	}
+	base, err := url.Parse(channel.BaseURL)
+	if err != nil || base.Scheme == "" || base.Host == "" {
+		return value
+	}
+	reference, err := url.Parse(value)
+	if err != nil {
+		return value
+	}
+	return base.ResolveReference(reference).String()
 }
 
 func doAIRequest(request *http.Request, channel model.ModelChannel) ([]byte, int, error) {
@@ -499,7 +570,7 @@ func parseVideoTaskPayload(payload []byte, modelName string) parsedVideoTaskPayl
 		Progress:        readIntPath(data, "progress"),
 		Seconds:         firstNonEmpty(readStringPath(data, "seconds"), readStringPath(data, "duration")),
 		Size:            firstNonEmpty(readStringPath(data, "size"), readSizeFromDimensions(data)),
-		VideoURL:        firstNonEmpty(readStringPath(data, "video_url"), readStringPath(data, "url"), readStringPath(data, "video.url"), readStringPath(data, "remixed_from_video_id"), readStringPath(data, "output_url"), readStringPath(data, "download_url"), readStringPath(data, "content.video_url"), findFirstHTTPURL(data)),
+		VideoURL:        firstNonEmpty(readStringPath(data, "video_url"), readStringPath(data, "url"), readStringPath(data, "video.url"), readStringPath(data, "result.url"), readStringPath(data, "remixed_from_video_id"), readStringPath(data, "output_url"), readStringPath(data, "download_url"), readStringPath(data, "content.video_url"), findFirstHTTPURL(data)),
 		Error:           firstNonEmpty(readStringPath(data, "error.message"), readStringPath(data, "error")),
 		ErrorDetail:     "",
 	}
