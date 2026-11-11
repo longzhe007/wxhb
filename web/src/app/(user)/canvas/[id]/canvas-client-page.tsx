@@ -31,7 +31,7 @@ import { captureVideoFrame, type VideoFramePosition } from "../utils/canvas-vide
 import { PANORAMA_IMAGE_SIZE, PANORAMA_NODE_SIZE, buildPanoramaPrompt, isCanvasImageNodeType, isPanoramaNodeType } from "../utils/canvas-panorama";
 import { applyCameraPrompt } from "../utils/canvas-camera";
 import { GROUP_PADDING, findContainingGroupId, findGroupDropTarget, getNodeBounds, snapNodesIntoGroup } from "../utils/canvas-group";
-import { buildCanvasClipboard, remapCanvasClipboardConnections, type CanvasClipboard } from "../utils/canvas-clipboard";
+import { buildCanvasClipboard, duplicateCanvasNode, remapCanvasClipboardConnections, type CanvasClipboard } from "../utils/canvas-clipboard";
 import {
     calculateCanvasAlignment,
     createCanvasAlignmentContext,
@@ -1377,24 +1377,15 @@ function InfiniteCanvasPage({ projectId }: { projectId: string }) {
     const duplicateNode = useCallback((nodeId: string) => {
         const source = nodesRef.current.find((node) => node.id === nodeId);
         if (!source) return;
-
         const id = `${source.type}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
-        const next: CanvasNodeData = {
-            ...source,
-            id,
-            title: `${source.title} Copy`,
-            position: { x: source.position.x + 36, y: source.position.y + 36 },
-            metadata: source.metadata ? {
-                ...source.metadata,
-                clientTaskId: undefined,
-                taskBackend: undefined,
-                ...(source.metadata.status === "stopping" || source.metadata.status === "stopped"
-                    ? { status: source.metadata.content ? NODE_STATUS_SUCCESS : "idle" as const, errorDetails: undefined }
-                    : {}),
-            } : undefined,
-        };
-
-        setNodes((prev) => [...prev, next]);
+        const duplicated = duplicateCanvasNode(nodesRef.current, connectionsRef.current, nodeId, id);
+        if (!duplicated) return;
+        const nextNodes = [...nodesRef.current, duplicated.node];
+        const nextConnections = [...connectionsRef.current, ...duplicated.connections.map((connection) => ({ ...connection, id: nanoid() }))];
+        nodesRef.current = nextNodes;
+        connectionsRef.current = nextConnections;
+        setNodes(nextNodes);
+        setConnections(nextConnections);
         setSelectedNodeIds(new Set([id]));
         setSelectedConnectionId(null);
         setDialogNodeId(id);

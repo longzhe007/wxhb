@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { buildCanvasClipboard, remapCanvasClipboardConnections } from "./canvas-clipboard";
+import { buildCanvasClipboard, duplicateCanvasNode, remapCanvasClipboardConnections } from "./canvas-clipboard";
 import { CanvasNodeType, type CanvasConnection, type CanvasNodeData } from "../types";
 
 function node(id: string, type = CanvasNodeType.Image): CanvasNodeData {
@@ -23,6 +23,18 @@ test("copying a generated node preserves its unselected reference input", () => 
 
     const remapped = remapCanvasClipboardConnections(clipboard!.connections, new Map([["generated", "generated-copy"]]), new Set(["reference", "generated-copy", "downstream"]));
     assert.deepEqual(remapped, [connection("input", "reference", "generated-copy")]);
+});
+
+test("duplicating from the node menu preserves its input references", () => {
+    const result = duplicateCanvasNode(
+        [node("reference"), node("generated"), node("downstream")],
+        [connection("input", "reference", "generated"), connection("output", "generated", "downstream")],
+        "generated",
+        "generated-duplicate",
+    );
+
+    assert.equal(result?.node.id, "generated-duplicate");
+    assert.deepEqual(result?.connections, [connection("input", "reference", "generated-duplicate")]);
 });
 
 test("copying multiple nodes preserves remapped internal connections", () => {

@@ -39,3 +39,33 @@ export function remapCanvasClipboardConnections(connections: CanvasConnection[],
         return fromNodeId && toNodeId ? [{ ...connection, fromNodeId, toNodeId }] : [];
     });
 }
+
+export function duplicateCanvasNode(nodes: CanvasNodeData[], connections: CanvasConnection[], nodeId: string, copiedNodeId: string) {
+    const clipboard = buildCanvasClipboard(nodes, connections, new Set([nodeId]));
+    const source = clipboard?.nodes.find((node) => node.id === nodeId);
+    if (!source) return null;
+
+    const node: CanvasNodeData = {
+        ...source,
+        id: copiedNodeId,
+        title: source.title.endsWith(" Copy") ? source.title : `${source.title} Copy`,
+        position: { x: source.position.x + 36, y: source.position.y + 36 },
+        metadata: source.metadata ? {
+            ...source.metadata,
+            clientTaskId: undefined,
+            taskBackend: undefined,
+            ...(source.metadata.status === "stopping" || source.metadata.status === "stopped"
+                ? { status: source.metadata.content ? "success" as const : "idle" as const, errorDetails: undefined }
+                : {}),
+        } : undefined,
+    };
+
+    return {
+        node,
+        connections: remapCanvasClipboardConnections(
+            clipboard.connections,
+            new Map([[nodeId, copiedNodeId]]),
+            new Set([...nodes.map((item) => item.id), copiedNodeId]),
+        ),
+    };
+}
