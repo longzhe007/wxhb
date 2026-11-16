@@ -92,6 +92,20 @@ func TestBuildMuseVideoPromptsMatchesOnlineMediaByPromptText(t *testing.T) {
 	}
 }
 
+func TestMuseVideoPromptMediaFromXHTMLSelectsLargestVideoVariant(t *testing.T) {
+	media := museVideoPromptMediaFromXHTML(`
+		{"media_url_https":"https://pbs.twimg.com/amplify_video_thumb/123/img/cover.jpg"}
+		{"url":"https://video.twimg.com/amplify_video/123/vid/avc1/320x568/low.mp4?tag=29"}
+		{"url":"https://video.twimg.com/amplify_video/123/vid/avc1/720x1280/high.mp4?tag=29"}
+	`)
+	if media.CoverURL != "https://pbs.twimg.com/amplify_video_thumb/123/img/cover.jpg" {
+		t.Fatalf("cover = %q", media.CoverURL)
+	}
+	if media.VideoURL != "https://video.twimg.com/amplify_video/123/vid/avc1/720x1280/high.mp4?tag=29" {
+		t.Fatalf("video = %q", media.VideoURL)
+	}
+}
+
 func containsPromptTag(tags []string, expected string) bool {
 	for _, tag := range tags {
 		if tag == expected {

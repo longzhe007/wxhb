@@ -3,11 +3,13 @@ package service
 import (
 	"encoding/json"
 	"errors"
+	"html"
 	"io"
 	"net/http"
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/tigerowo/infinite-canvas/model"
@@ -28,6 +30,12 @@ const (
 )
 
 var gptImage2CaseFiles = []string{"README.md", "cases/ad-creative.md", "cases/character.md", "cases/comparison.md", "cases/ecommerce.md", "cases/portrait.md", "cases/poster.md", "cases/ui.md"}
+
+var (
+	museVideoThumbnailURLPattern = regexp.MustCompile(`https://pbs\.twimg\.com/amplify_video_thumb/[^\s"'<>\\]+?\.(?:jpg|jpeg|png)(?:\?[^\s"'<>\\]+)?`)
+	museVideoMP4URLPattern       = regexp.MustCompile(`https://video\.twimg\.com/[^\s"'<>\\]+?\.mp4(?:\?[^\s"'<>\\]+)?`)
+	museVideoResolutionPattern   = regexp.MustCompile(`/([0-9]+)x([0-9]+)/`)
+)
 
 type gptImage2Data struct {
 	Records []struct {
@@ -161,6 +169,10 @@ func buildMuseVideoPrompts() ([]model.Prompt, error) {
 	if mediaPage, err := fetchURL(museVideoPromptsMediaPage); err == nil {
 		media = museVideoPromptMediaIndexFromHTML(mediaPage)
 	}
+	entries := []museVideoPrompt{}
+	if err := json.Unmarshal([]byte(raw), &entries); err == nil {
+		enrichMuseVideoPromptMediaFromSourcePages(entries, &media)
+	}
 	return buildMuseVideoPromptsFromJSONWithMediaIndex([]byte(raw), media)
 }
 
@@ -223,6 +235,99 @@ func buildMuseVideoPromptsFromJSONWithMediaIndex(raw []byte, mediaIndex museVide
 
 func museVideoPromptMediaFromHTML(html string) map[string]museVideoPromptMedia {
 	return museVideoPromptMediaIndexFromHTML(html).BySource
+}
+
+func museVideoPromptMediaFromXHTML(source string) museVideoPromptMedia {
+	content := html.UnescapeString(strings.ReplaceAll(strings.ReplaceAll(source, `\/`, "/"), `\u0026`, "&"))
+	thumbnail := strings.TrimSpace(museVideoThumbnailURLPattern.FindString(content))
+	videoURL := ""
+	videoPixels := 0
+	for _, candidate := range museVideoMP4URLPattern.FindAllString(content, -1) {
+		candidate = strings.TrimSpace(candidate)
+		match := museVideoResolutionPattern.FindStringSubmatch(candidate)
+		if len(match) != 3 {
+			continue
+		}
+		width, _ := strconv.Atoi(match[1])
+		height, _ := strconv.Atoi(match[2])
+		if width*height <= videoPixels {
+			continue
+		}
+		videoPixels = width * height
+		videoURL = candidate
+	}
+	return museVideoPromptMedia{CoverURL: thumbnail, VideoURL: videoURL}
+}
+
+func enrichMuseVideoPromptMediaFromSourcePages(entries []museVideoPrompt, mediaIndex *museVideoPromptMediaIndex) {
+	type sourcePageResult struct {
+		sourceURL string
+		media     museVideoPromptMedia
+	}
+	missing := make([]museVideoPrompt, 0)
+	for _, entry := range entries {
+		media := mediaIndex.BySource[normalizeMuseVideoSourceURL(entry.URL)]
+		if media.VideoURL == "" {
+			media = museVideoPromptMediaByText(entry.Text, mediaIndex.ByText)
+		}
+		if media.VideoURL == "" && isMuseVideoSourceURL(entry.URL) {
+			missing = append(missing, entry)
+		}
+	}
+	if len(missing) == 0 {
+		return
+	}
+
+	jobs := make(chan museVideoPrompt)
+	results := make(chan sourcePageResult)
+	workers := 4
+	if len(missing) < workers {
+		workers = len(missing)
+	}
+	var workersDone sync.WaitGroup
+	for range workers {
+		workersDone.Add(1)
+		go func() {
+			defer workersDone.Done()
+			for entry := range jobs {
+				page, err := fetchMuseVideoSourcePage(entry.URL)
+				if err != nil {
+					continue
+				}
+				media := museVideoPromptMediaFromXHTML(page)
+				if media.VideoURL != "" && media.CoverURL != "" {
+					results <- sourcePageResult{sourceURL: normalizeMuseVideoSourceURL(entry.URL), media: media}
+				}
+			}
+		}()
+	}
+	go func() {
+		for _, entry := range missing {
+			jobs <- entry
+		}
+		close(jobs)
+		workersDone.Wait()
+		close(results)
+	}()
+	for result := range results {
+		mediaIndex.BySource[result.sourceURL] = result.media
+	}
+}
+
+func isMuseVideoSourceURL(value string) bool {
+	value = strings.ToLower(strings.TrimSpace(value))
+	return strings.HasPrefix(value, "https://x.com/") || strings.HasPrefix(value, "https://twitter.com/")
+}
+
+func fetchMuseVideoSourcePage(url string) (string, error) {
+	request, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		return "", err
+	}
+	request.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+	request.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+	request.Header.Set("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8")
+	return fetchRequest(request)
 }
 
 func museVideoPromptMediaIndexFromHTML(html string) museVideoPromptMediaIndex {
@@ -332,7 +437,14 @@ func fetchText(baseURL, file string) (string, error) {
 }
 
 func fetchURL(url string) (string, error) {
-	request, _ := http.NewRequest(http.MethodGet, url, nil)
+	request, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		return "", err
+	}
+	return fetchRequest(request)
+}
+
+func fetchRequest(request *http.Request) (string, error) {
 	client := http.Client{Timeout: 30 * time.Second}
 	response, err := client.Do(request)
 	if err != nil {
@@ -340,7 +452,7 @@ func fetchURL(url string) (string, error) {
 	}
 	defer response.Body.Close()
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return "", errors.New(url + " 拉取失败")
+		return "", errors.New(request.URL.String() + " 拉取失败")
 	}
 	data, err := io.ReadAll(response.Body)
 	return string(data), err
