@@ -2,8 +2,10 @@ package handler
 
 import (
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 
@@ -246,4 +248,53 @@ func ProxyImage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_, _ = io.Copy(w, resp.Body)
+}
+
+// ProxyPublicVideoMedia serves approved public video previews without exposing the app origin to the source host.
+func ProxyPublicVideoMedia(w http.ResponseWriter, r *http.Request) {
+	targetURL, err := publicVideoMediaURL(r.URL.Query().Get("url"))
+	if err != nil {
+		FailWithStatus(w, http.StatusBadRequest, "无效的视频资源地址")
+		return
+	}
+	req, err := http.NewRequestWithContext(r.Context(), http.MethodGet, targetURL.String(), nil)
+	if err != nil {
+		FailWithStatus(w, http.StatusBadRequest, "无效的视频资源地址")
+		return
+	}
+	if byteRange := r.Header.Get("Range"); byteRange != "" {
+		req.Header.Set("Range", byteRange)
+	}
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+	req.Header.Set("Accept", "video/*,*/*;q=0.8")
+
+	response, err := service.PublicMediaHTTPClient().Do(req)
+	if err != nil {
+		FailWithStatus(w, http.StatusBadGateway, "视频资源加载失败")
+		return
+	}
+	defer response.Body.Close()
+	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
+		FailWithStatus(w, http.StatusBadGateway, "视频资源加载失败")
+		return
+	}
+	for _, name := range []string{"Content-Type", "Content-Length", "Content-Range", "Accept-Ranges", "Last-Modified", "ETag"} {
+		if value := response.Header.Get(name); value != "" {
+			w.Header().Set(name, value)
+		}
+	}
+	w.Header().Set("Cache-Control", "public, max-age=86400")
+	w.WriteHeader(response.StatusCode)
+	_, _ = io.Copy(w, response.Body)
+}
+
+func publicVideoMediaURL(value string) (*url.URL, error) {
+	parsed, err := url.ParseRequestURI(strings.TrimSpace(value))
+	if err != nil || parsed.Scheme != "https" || parsed.User != nil {
+		return nil, errors.New("invalid public video URL")
+	}
+	if !strings.EqualFold(parsed.Hostname(), "video.twimg.com") || !strings.HasSuffix(strings.ToLower(parsed.Path), ".mp4") {
+		return nil, errors.New("unsupported public video host")
+	}
+	return parsed, nil
 }

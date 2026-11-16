@@ -5,6 +5,7 @@ type Prompt struct {
 	ID        string   `json:"id" gorm:"primaryKey"`
 	Title     string   `json:"title" gorm:"size:191"`
 	CoverURL  string   `json:"coverUrl"`
+	VideoURL  string   `json:"videoUrl"`
 	Prompt    string   `json:"prompt"`
 	Tags      []string `json:"tags" gorm:"serializer:json"`
 	Category  string   `json:"category" gorm:"index"`

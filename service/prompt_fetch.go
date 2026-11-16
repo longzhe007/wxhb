@@ -24,6 +24,7 @@ const (
 	davidWuGptImage2RawBase      = "https://raw.githubusercontent.com/davidwuw0811-boop/awesome-gpt-image2-prompts/main"
 	museVideoPromptsRawBase      = "https://raw.githubusercontent.com/apimodels/muse-video-prompts/main"
 	museVideoPromptsRepository   = "https://github.com/apimodels/muse-video-prompts"
+	museVideoPromptsMediaPage    = "https://apimodels.app/zh/muse-video-prompts"
 )
 
 var gptImage2CaseFiles = []string{"README.md", "cases/ad-creative.md", "cases/character.md", "cases/comparison.md", "cases/ecommerce.md", "cases/portrait.md", "cases/poster.md", "cases/ui.md"}
@@ -87,6 +88,31 @@ type museVideoPrompt struct {
 	Page           string  `json:"page"`
 }
 
+type museVideoPromptMedia struct {
+	CoverURL string
+	VideoURL string
+}
+
+type museVideoPromptMediaIndex struct {
+	BySource map[string]museVideoPromptMedia
+	ByText   map[string]museVideoPromptMedia
+}
+
+type museVideoPromptJSONLD struct {
+	Type            string `json:"@type"`
+	URL             string `json:"url"`
+	IsBasedOn       string `json:"isBasedOn"`
+	ContentURL      string `json:"contentUrl"`
+	ThumbnailURL    string `json:"thumbnailUrl"`
+	Description     string `json:"description"`
+	ItemListElement []struct {
+		Item struct {
+			URL       string `json:"url"`
+			IsBasedOn string `json:"isBasedOn"`
+		} `json:"item"`
+	} `json:"itemListElement"`
+}
+
 func SyncPromptCategory(category string) ([]model.PromptCategory, error) {
 	for _, item := range repository.PromptCategories() {
 		if item.Category != category {
@@ -131,10 +157,22 @@ func buildMuseVideoPrompts() ([]model.Prompt, error) {
 	if err != nil {
 		return nil, err
 	}
-	return buildMuseVideoPromptsFromJSON([]byte(raw))
+	media := museVideoPromptMediaIndex{BySource: map[string]museVideoPromptMedia{}, ByText: map[string]museVideoPromptMedia{}}
+	if mediaPage, err := fetchURL(museVideoPromptsMediaPage); err == nil {
+		media = museVideoPromptMediaIndexFromHTML(mediaPage)
+	}
+	return buildMuseVideoPromptsFromJSONWithMediaIndex([]byte(raw), media)
 }
 
 func buildMuseVideoPromptsFromJSON(raw []byte) ([]model.Prompt, error) {
+	return buildMuseVideoPromptsFromJSONWithMedia(raw, nil)
+}
+
+func buildMuseVideoPromptsFromJSONWithMedia(raw []byte, mediaBySource map[string]museVideoPromptMedia) ([]model.Prompt, error) {
+	return buildMuseVideoPromptsFromJSONWithMediaIndex(raw, museVideoPromptMediaIndex{BySource: mediaBySource, ByText: map[string]museVideoPromptMedia{}})
+}
+
+func buildMuseVideoPromptsFromJSONWithMediaIndex(raw []byte, mediaIndex museVideoPromptMediaIndex) ([]model.Prompt, error) {
 	data := []museVideoPrompt{}
 	if err := json.Unmarshal(raw, &data); err != nil {
 		return nil, err
@@ -164,9 +202,15 @@ func buildMuseVideoPromptsFromJSON(raw []byte) ([]model.Prompt, error) {
 		if entry.Seconds > 0 {
 			tags = append(tags, museVideoDuration(entry.Seconds)+"秒")
 		}
+		media := mediaIndex.BySource[normalizeMuseVideoSourceURL(entry.URL)]
+		if media.VideoURL == "" {
+			media = museVideoPromptMediaByText(entry.Text, mediaIndex.ByText)
+		}
 		items = append(items, model.Prompt{
 			ID:        "muse-video-prompts-" + id,
 			Title:     id + " · " + title,
+			CoverURL:  media.CoverURL,
+			VideoURL:  media.VideoURL,
 			Prompt:    prompt,
 			Tags:      tags,
 			Preview:   museVideoPromptPreview(entry),
@@ -175,6 +219,73 @@ func buildMuseVideoPromptsFromJSON(raw []byte) ([]model.Prompt, error) {
 		})
 	}
 	return items, nil
+}
+
+func museVideoPromptMediaFromHTML(html string) map[string]museVideoPromptMedia {
+	return museVideoPromptMediaIndexFromHTML(html).BySource
+}
+
+func museVideoPromptMediaIndexFromHTML(html string) museVideoPromptMediaIndex {
+	scripts := regexp.MustCompile(`(?is)<script[^>]+type=["']application/ld\+json["'][^>]*>(.*?)</script>`).FindAllStringSubmatch(html, -1)
+	sourceByOnlineURL := map[string]string{}
+	documents := make([]museVideoPromptJSONLD, 0, len(scripts))
+	for _, script := range scripts {
+		var document museVideoPromptJSONLD
+		if err := json.Unmarshal([]byte(strings.TrimSpace(script[1])), &document); err != nil {
+			continue
+		}
+		documents = append(documents, document)
+		for _, listItem := range document.ItemListElement {
+			onlineURL := strings.TrimSpace(listItem.Item.URL)
+			sourceURL := normalizeMuseVideoSourceURL(listItem.Item.IsBasedOn)
+			if onlineURL != "" && sourceURL != "" {
+				sourceByOnlineURL[onlineURL] = sourceURL
+			}
+		}
+	}
+
+	mediaIndex := museVideoPromptMediaIndex{BySource: map[string]museVideoPromptMedia{}, ByText: map[string]museVideoPromptMedia{}}
+	for _, document := range documents {
+		if !strings.EqualFold(strings.TrimSpace(document.Type), "VideoObject") {
+			continue
+		}
+		if strings.TrimSpace(document.ContentURL) == "" || strings.TrimSpace(document.ThumbnailURL) == "" {
+			continue
+		}
+		media := museVideoPromptMedia{
+			CoverURL: strings.TrimSpace(document.ThumbnailURL),
+			VideoURL: strings.TrimSpace(document.ContentURL),
+		}
+		if sourceURL := sourceByOnlineURL[strings.TrimSpace(document.URL)]; sourceURL != "" {
+			mediaIndex.BySource[sourceURL] = media
+		}
+		if textKey := museVideoPromptTextKey(document.Description); textKey != "" {
+			mediaIndex.ByText[textKey] = media
+		}
+	}
+	return mediaIndex
+}
+
+func normalizeMuseVideoSourceURL(value string) string {
+	return strings.TrimSpace(value)
+}
+
+func museVideoPromptMediaByText(prompt string, mediaByText map[string]museVideoPromptMedia) museVideoPromptMedia {
+	promptKey := museVideoPromptTextKey(prompt)
+	if len([]rune(promptKey)) < 16 {
+		return museVideoPromptMedia{}
+	}
+	for mediaText, media := range mediaByText {
+		if strings.HasPrefix(mediaText, promptKey) || strings.HasPrefix(promptKey, mediaText) {
+			return media
+		}
+	}
+	return museVideoPromptMedia{}
+}
+
+func museVideoPromptTextKey(value string) string {
+	value = strings.TrimSpace(strings.TrimRight(strings.TrimSpace(value), "…"))
+	return strings.Join(strings.Fields(value), " ")
 }
 
 func museVideoPromptPreview(entry museVideoPrompt) string {
@@ -217,7 +328,11 @@ func museVideoDuration(seconds float64) string {
 }
 
 func fetchText(baseURL, file string) (string, error) {
-	request, _ := http.NewRequest(http.MethodGet, baseURL+"/"+file, nil)
+	return fetchURL(baseURL + "/" + file)
+}
+
+func fetchURL(url string) (string, error) {
+	request, _ := http.NewRequest(http.MethodGet, url, nil)
 	client := http.Client{Timeout: 30 * time.Second}
 	response, err := client.Do(request)
 	if err != nil {
@@ -225,7 +340,7 @@ func fetchText(baseURL, file string) (string, error) {
 	}
 	defer response.Body.Close()
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return "", errors.New(file + " 拉取失败")
+		return "", errors.New(url + " 拉取失败")
 	}
 	data, err := io.ReadAll(response.Body)
 	return string(data), err

@@ -20,7 +20,8 @@ function proxyHeaders(request: NextRequest) {
 
 function responseHeaders(response: Response) {
     const headers = new Headers(response.headers);
-    headers.delete("content-length");
+    const isMediaResponse = response.status === 206 || response.headers.get("content-type")?.startsWith("video/");
+    if (!isMediaResponse) headers.delete("content-length");
     headers.delete("content-encoding");
     headers.delete("transfer-encoding");
     return headers;

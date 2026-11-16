@@ -4,6 +4,7 @@ export type Prompt = {
     id: string;
     title: string;
     coverUrl: string;
+    videoUrl: string;
     prompt: string;
     tags: string[];
     category: string;

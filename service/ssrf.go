@@ -15,6 +15,19 @@ var safeProxyHTTPClient = newSafeProxyHTTPClient()
 func SafeProxyHTTPClient() *http.Client {
 	return safeProxyHTTPClient
 }
+
+// PublicMediaHTTPClient follows the user's configured outbound proxy for a caller that has already restricted its target host.
+func PublicMediaHTTPClient() *http.Client {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	return &http.Client{
+		Transport: transport,
+		Timeout:   5 * time.Minute,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+}
+
 func newSafeProxyHTTPClient() *http.Client {
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.Proxy = nil

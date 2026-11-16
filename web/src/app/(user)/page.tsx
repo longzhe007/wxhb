@@ -15,7 +15,7 @@ import { AssetPickerModal } from "./canvas/components/asset-picker-modal";
 import { CanvasAssistantComposer } from "./canvas/components/canvas-assistant-composer";
 import { useCanvasStore } from "./canvas/stores/use-canvas-store";
 import { canvasResourceLabel } from "./canvas/utils/canvas-resource-references";
-import { HomeBannerCarousel, type HomeBanner } from "./home-banner-carousel";
+import { PromptCover } from "@/components/prompts/prompt-cover";
 import {
     MAX_CANVAS_AGENT_SKILLS,
     CanvasNodeType,
@@ -25,16 +25,6 @@ import {
     type InsertAssetPayload,
     type PendingAgentAsset,
 } from "./canvas/types";
-
-
-const HOME_BANNERS: HomeBanner[] = [
-    { imageUrl: "https://gcore.jsdelivr.net/gh/tigerowo/cdn-tdeh@v0.7/img/infinite-canvas/88.webp", videoUrl: "", linkUrl: "https://88api.ai/sign-up?aff=25ty", alt: "1" },
-    { imageUrl: "https://gcore.jsdelivr.net/gh/tigerowo/cdn-tdeh@v0.6/img/infinite-canvas/metaso.webp", videoUrl: "", linkUrl: "https://metaso.cn/minimax-h3/?s=tt", alt: "2" },
-    { imageUrl: "https://gcore.jsdelivr.net/gh/tigerowo/cdn-tdeh@v0.5/img/infinite-canvas/3ddirectortl.webp", videoUrl: "", linkUrl: "", alt: "3" },
-    { imageUrl: "https://gcore.jsdelivr.net/gh/tigerowo/cdn-tdeh@v0.4/img/infinite-canvas/agent.webp", videoUrl: "https://gcore.jsdelivr.net/gh/tigerowo/cdn-tdeh@v0.4/img/infinite-canvas/agent.webm", linkUrl: "", alt: "4" },
-    { imageUrl: "https://gcore.jsdelivr.net/gh/tigerowo/cdn-tdeh@v0.4/img/infinite-canvas/panorama.webp", videoUrl: "", linkUrl: "", alt: "5" },
-    { imageUrl: "https://gcore.jsdelivr.net/gh/tigerowo/cdn-tdeh@v0.4/img/infinite-canvas/3ddirector.webp", videoUrl: "", linkUrl: "", alt: "6" },
-];
 
 function toPendingAgentAsset(payload: InsertAssetPayload, label: string): PendingAgentAsset {
     const nodeId = nanoid();
@@ -74,6 +64,7 @@ export default function IndexPage() {
     }));
     const uploadInputRef = useRef<HTMLInputElement>(null);
     const pendingAssetCountsRef = useRef<Record<InsertAssetPayload["kind"], number>>({ text: 0, image: 0, video: 0, audio: 0 });
+    const promptPreviewItems = promptShowcase.filter((item) => Boolean(item.coverUrl));
 
     useEffect(() => {
         void fetchPrompts({ pageSize: 12 })
@@ -139,8 +130,7 @@ export default function IndexPage() {
         <main className="relative h-full overflow-x-hidden overflow-y-auto bg-background bg-[radial-gradient(#e5e7eb_1px,transparent_1px)] [background-size:16px_16px] text-stone-950 dark:bg-[radial-gradient(rgba(245,245,244,.18)_1px,transparent_1px)] dark:text-stone-100">
             <section className="relative mx-auto min-h-[calc(100vh-4rem)] max-w-7xl px-6">
                 <section className="relative flex min-h-[620px] flex-col items-center justify-center py-10 sm:py-14">
-                    <HomeBannerCarousel banners={HOME_BANNERS} />
-                    <div className="mt-12 w-full max-w-[820px]">
+                    <div className="w-full max-w-[820px]">
                         <CanvasAssistantComposer
                             prompt={prompt}
                             isRunning={false}
@@ -181,7 +171,12 @@ export default function IndexPage() {
                                 key={item.id}
                                 type="button"
                                 onClick={() => {
-                                    setPreviewIndex(index);
+                                    const nextPreviewIndex = promptPreviewItems.findIndex((previewItem) => previewItem.id === item.id);
+                                    if (nextPreviewIndex < 0) {
+                                        router.push("/prompts");
+                                        return;
+                                    }
+                                    setPreviewIndex(nextPreviewIndex);
                                     setPreviewOpen(true);
                                 }}
                                 className={cn(
@@ -190,7 +185,7 @@ export default function IndexPage() {
                                     index === 3 && "md:col-span-2",
                                 )}
                             >
-                                <img src={item.coverUrl} alt={item.title} className="h-full w-full object-cover transition duration-500 group-hover:scale-[1.03]" />
+                                <PromptCover coverUrl={item.coverUrl} title={item.title} className="h-full transition duration-500 group-hover:scale-[1.03]" />
                                 <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/70 via-black/35 to-transparent p-4 text-white">
                                     <div className="mb-2 flex flex-wrap gap-1.5">
                                         {item.tags.slice(0, 2).map((tag) => (
@@ -217,7 +212,7 @@ export default function IndexPage() {
                 onClose={() => setAssetPickerOpen(false)}
             />
             <Image.PreviewGroup
-                items={promptShowcase.map((item) => ({
+                items={promptPreviewItems.map((item) => ({
                     src: item.coverUrl,
                     alt: item.title,
                 }))}
