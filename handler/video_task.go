@@ -3,11 +3,14 @@ package handler
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log"
+	"mime"
+	"mime/multipart"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -104,7 +107,9 @@ func proxyAIVideoTaskRequest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	upstreamPath := resolveAIProxyPath(channel, modelName, "/videos")
-	if service.IsTokenDanceChannel(channel) {
+	if isMuseVideoModel(modelName) {
+		body, contentType, err = normalizeVideoCreateBody(body, contentType, modelName, channel, upstreamPath)
+	} else if service.IsTokenDanceChannel(channel) {
 		prepared, _, prepareErr := prepareAIProtocolRequest(aiProtocolRequest{
 			mode: aiProtocolVideoRequest, body: body, contentType: contentType, modelName: modelName,
 			channel: channel, endpoint: "/videos", path: upstreamPath,
@@ -115,7 +120,7 @@ func proxyAIVideoTaskRequest(w http.ResponseWriter, r *http.Request) {
 	}
 	if err != nil {
 		log.Printf("AI video normalize request failed: model=%s err=%v", modelName, err)
-		if service.IsAutoDLChannel(channel) {
+		if service.IsAutoDLChannel(channel) || isMuseVideoModel(modelName) {
 			Fail(w, err.Error())
 			return
 		}
@@ -423,7 +428,7 @@ func isMuseVideoModel(modelName string) bool {
 }
 
 func normalizeMuseVideoCreateBody(body []byte, contentType string) ([]byte, string, error) {
-	payload, err := tokenDanceRequestPayload(body, contentType)
+	payload, err := museVideoRequestPayload(body, contentType)
 	if err != nil {
 		return nil, "", err
 	}
@@ -436,21 +441,114 @@ func normalizeMuseVideoCreateBody(body []byte, contentType string) ([]byte, stri
 		"duration": duration,
 		"size":     museVideoSize(toStringSafe(payload["size"])),
 	}
-	images := []map[string]string{}
-	seen := map[string]bool{}
-	for _, key := range []string{"images", "input_reference[]", "first_frame_url", "last_frame_url"} {
-		for _, imageURL := range tokenDanceStrings(payload[key]) {
-			if imageURL != "" && !seen[imageURL] {
-				seen[imageURL] = true
-				images = append(images, map[string]string{"url": imageURL})
-			}
-		}
+	images := museVideoMediaItems(payload, "images", "input_reference[]", "first_frame_url", "last_frame_url")
+	videos := museVideoMediaItems(payload, "videos", "video_reference[]")
+	audios := museVideoMediaItems(payload, "audios", "audio_reference[]")
+	if len(images)+len(videos)+len(audios) > 10 {
+		return nil, "", fmt.Errorf("Muse Video 最多支持 10 个参考素材，当前已选择 %d 个", len(images)+len(videos)+len(audios))
 	}
 	if len(images) > 0 {
 		result["images"] = images
 	}
+	if len(videos) > 0 {
+		result["videos"] = videos
+	}
+	if len(audios) > 0 {
+		result["audios"] = audios
+	}
 	encoded, err := json.Marshal(result)
 	return encoded, "application/json", err
+}
+
+func museVideoRequestPayload(body []byte, contentType string) (map[string]any, error) {
+	if !strings.HasPrefix(strings.ToLower(contentType), "multipart/form-data") {
+		return tokenDanceRequestPayload(body, contentType)
+	}
+	_, params, err := mime.ParseMediaType(contentType)
+	if err != nil || params["boundary"] == "" {
+		return nil, errors.New("Muse Video multipart 参数格式错误")
+	}
+	form, err := multipart.NewReader(bytes.NewReader(body), params["boundary"]).ReadForm(40 << 20)
+	if err != nil {
+		return nil, errors.New("Muse Video multipart 参数读取失败")
+	}
+	defer form.RemoveAll()
+
+	payload := map[string]any{}
+	for key, values := range form.Value {
+		for _, value := range values {
+			tokenDanceAppend(payload, key, value)
+		}
+	}
+	for key, headers := range form.File {
+		for _, header := range headers {
+			file, err := header.Open()
+			if err != nil {
+				return nil, err
+			}
+			data, readErr := io.ReadAll(io.LimitReader(file, 40<<20+1))
+			file.Close()
+			if readErr != nil {
+				return nil, readErr
+			}
+			if len(data) > 40<<20 {
+				return nil, errors.New("Muse Video 单个参考素材不能超过 40 MiB")
+			}
+			mediaType := header.Header.Get("Content-Type")
+			if mediaType == "" {
+				mediaType = http.DetectContentType(data)
+			}
+			mediaType = strings.ToLower(strings.TrimSpace(mediaType))
+			if !strings.HasPrefix(mediaType, "image/") && !strings.HasPrefix(mediaType, "video/") && !strings.HasPrefix(mediaType, "audio/") {
+				return nil, errors.New("Muse Video 参考素材仅支持图片、视频或音频")
+			}
+			tokenDanceAppend(payload, key, "data:"+mediaType+";base64,"+base64.StdEncoding.EncodeToString(data))
+		}
+	}
+	return payload, nil
+}
+
+func museVideoMediaItems(payload map[string]any, keys ...string) []map[string]string {
+	seen := map[string]bool{}
+	items := []map[string]string{}
+	for _, key := range keys {
+		for _, value := range museVideoStrings(payload[key]) {
+			if value == "" || seen[value] {
+				continue
+			}
+			seen[value] = true
+			items = append(items, map[string]string{"url": value})
+		}
+	}
+	return items
+}
+
+func museVideoStrings(value any) []string {
+	switch typed := value.(type) {
+	case string:
+		if text := strings.TrimSpace(typed); text != "" {
+			return []string{text}
+		}
+	case []string:
+		result := make([]string, 0, len(typed))
+		for _, item := range typed {
+			result = append(result, museVideoStrings(item)...)
+		}
+		return result
+	case []any:
+		result := []string{}
+		for _, item := range typed {
+			result = append(result, museVideoStrings(item)...)
+		}
+		return result
+	case map[string]any:
+		result := []string{}
+		for _, key := range []string{"url", "image_url", "video_url", "audio_url"} {
+			result = append(result, museVideoStrings(typed[key])...)
+		}
+		return result
+	}
+	return nil
 }
 
 func museVideoSize(value string) string {

@@ -2,6 +2,7 @@
 
 ## Unreleased
 
++ [新增] Muse Video 支持本地图片、视频和音频参考素材
 + [修复] 修复 Gemini 误将思考图作为正式结果
 + [修复] 修复 Grok2API 视频参考图 URL 强制被转换为 Base64
 
