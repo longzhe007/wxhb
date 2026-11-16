@@ -1,3 +1,5 @@
+# wxhb
+
 <p align="center">
   <img src="web/public/logo.svg" width="96" alt="infinite-canvas logo">
 </p>
