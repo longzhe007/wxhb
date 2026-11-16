@@ -54,18 +54,106 @@ bun run dev
 - 管理后台：`http://127.0.0.1:3000/admin`
 - 后端健康检查：`http://127.0.0.1:8080/api/health`
 
-### 生产构建
+## Windows 非 Docker 部署
+
+以下流程适用于将项目部署在 Windows 电脑或 Windows 服务器上。应用会运行在本机 `3000` 端口，后端 API 运行在 `8080` 端口。
+
+### 1. 获取代码与安装依赖
+
+```powershell
+git clone https://github.com/longzhe007/wxhb.git
+Set-Location wxhb
+Copy-Item .env.example .env
+go mod download
+
+Set-Location web
+bun install --frozen-lockfile
+Set-Location ..
+```
+
+首次部署前编辑根目录 `.env`，至少修改以下配置：
+
+```text
+ADMIN_USERNAME=admin
+ADMIN_PASSWORD=请设置强密码
+JWT_SECRET=请设置一段随机长字符串
+DATABASE_DSN=data/infinite-canvas.db
+```
+
+`data/infinite-canvas.db` 保存 SQLite 数据库。升级前请备份整个 `data` 目录。
+
+### 2. 构建生产产物
 
 ```powershell
 Set-Location web
 bun run build
-```
+Set-Location ..
 
-构建会生成 Next.js standalone 产物，并自动复制静态资源。后端可执行文件可使用以下命令生成：
-
-```powershell
+New-Item -ItemType Directory -Force .runtime | Out-Null
 go build -o .runtime/infinite-canvas-api.exe .
 ```
+
+`bun run build` 会生成 `web/.next/standalone`，并自动复制 Next.js 静态资源与 `public` 目录。
+
+### 3. 后台启动
+
+```powershell
+New-Item -ItemType Directory -Force .runtime/logs | Out-Null
+
+Start-Process `
+  -FilePath "$PWD/.runtime/infinite-canvas-api.exe" `
+  -WorkingDirectory $PWD `
+  -WindowStyle Hidden `
+  -RedirectStandardOutput "$PWD/.runtime/logs/api.stdout.log" `
+  -RedirectStandardError "$PWD/.runtime/logs/api.stderr.log"
+
+$env:PORT = "3000"
+$env:HOSTNAME = "127.0.0.1"
+Start-Process `
+  -FilePath "node" `
+  -ArgumentList "server.js" `
+  -WorkingDirectory "$PWD/web/.next/standalone" `
+  -WindowStyle Hidden `
+  -RedirectStandardOutput "$PWD/.runtime/logs/web.stdout.log" `
+  -RedirectStandardError "$PWD/.runtime/logs/web.stderr.log"
+```
+
+如需让局域网设备访问，将 `HOSTNAME` 改为 `0.0.0.0`，并在 Windows 防火墙中仅向可信网络开放 `3000` 端口。
+
+### 4. 验证部署
+
+```powershell
+(Invoke-WebRequest http://127.0.0.1:3000/).StatusCode
+(Invoke-WebRequest http://127.0.0.1:8080/api/health).StatusCode
+```
+
+两个命令都应返回 `200`。运行日志位于 `.runtime/logs/`。
+
+### 5. 停止服务
+
+```powershell
+Get-NetTCPConnection -LocalPort 3000,8080 -State Listen -ErrorAction SilentlyContinue |
+  Select-Object -ExpandProperty OwningProcess -Unique |
+  ForEach-Object { Stop-Process -Id $_ -Force }
+```
+
+### 6. 更新部署
+
+停止服务后执行：
+
+```powershell
+git pull --ff-only origin main
+go mod download
+
+Set-Location web
+bun install --frozen-lockfile
+bun run build
+Set-Location ..
+
+go build -o .runtime/infinite-canvas-api.exe .
+```
+
+然后重复“后台启动”和“验证部署”两节。
 
 ## 配置 AI 渠道
 
